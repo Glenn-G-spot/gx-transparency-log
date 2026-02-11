@@ -1,0 +1,40 @@
+latest_id=20260211T192351Z
+
+== Core files ==
+OK  GX_PROOF_ROOT_20260211T192351Z.txt
+OK  GX_PROOF_PACK_20260211T192351Z.tar.gz
+OK  GX_PROOF_MANIFEST_20260211T192351Z.tsv
+OK  GX_PROOF_SUMMARY_20260211T192351Z.txt
+
+== GPG verify ==
+-- verify: GX_PROOF_ROOT_20260211T192351Z.txt.asc
+gpg: Signature made Wed Feb 11 20:23:52 2026 CET
+gpg:                using EDDSA key 71FB0C1FD7F4769BB04146E363B93D1E6354097B
+gpg: Good signature from "GX Audit Authority (GX_OS_AUDIT_COURT_20260124T194745Z) <audit@gx.local>" [ultimate]
+
+-- verify: GX_PROOF_PACK_20260211T192351Z.tar.gz.asc
+gpg: Signature made Wed Feb 11 20:23:52 2026 CET
+gpg:                using EDDSA key 71FB0C1FD7F4769BB04146E363B93D1E6354097B
+gpg: Good signature from "GX Audit Authority (GX_OS_AUDIT_COURT_20260124T194745Z) <audit@gx.local>" [ultimate]
+
+-- verify: GX_PROOF_MANIFEST_20260211T192351Z.tsv.asc
+gpg: Signature made Wed Feb 11 20:23:52 2026 CET
+gpg:                using EDDSA key 71FB0C1FD7F4769BB04146E363B93D1E6354097B
+gpg: Good signature from "GX Audit Authority (GX_OS_AUDIT_COURT_20260124T194745Z) <audit@gx.local>" [ultimate]
+
+-- verify: GX_PROOF_SUMMARY_20260211T192351Z.txt.asc
+gpg: Signature made Wed Feb 11 23:05:34 2026 CET
+gpg:                using EDDSA key 71FB0C1FD7F4769BB04146E363B93D1E6354097B
+gpg: Good signature from "GX Audit Authority (GX_OS_AUDIT_COURT_20260124T194745Z) <audit@gx.local>" [ultimate]
+
+== OTS present? ==
+GX_PROOF_PACK_20260211T192351Z.tar.gz.ots
+GX_PROOF_ROOT_20260211T192351Z.txt.ots
+
+== Checklist ==
+- Proof pack exists?        YES
+- Root exists?              YES
+- Manifest exists?          YES
+- Root signature exists?    YES
+- Pack signature exists?    YES
+- OTS files present?        YES
