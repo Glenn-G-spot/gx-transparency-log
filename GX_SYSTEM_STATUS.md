@@ -1,0 +1,26 @@
+# GX SYSTEM STATUS
+
+**latest_id:** `20260211T192351Z`
+
+## Core artifacts
+- ROOT: `GX_PROOF_ROOT_20260211T192351Z.txt` → **DONE**
+- PACK: `GX_PROOF_PACK_20260211T192351Z.tar.gz` → **DONE**
+- MANIFEST: `GX_PROOF_MANIFEST_20260211T192351Z.tsv` → **DONE**
+- SUMMARY: `GX_PROOF_SUMMARY_20260211T192351Z.txt` → **DONE**
+
+## Layer 1 — Merkle
+- Merkle root file: `GX_MERKLE_ROOT_20260211T192351Z.txt` → **DONE**
+
+## Layer 2 — Anchoring
+- DNS anchor file: `GX_DNS_TXT_ANCHOR_20260211T192351Z.txt` → **TODO**
+- OTS (merkle): **PENDING**
+
+### Verify commands
+```bash
+cd "/Users/next-move/GX_UNIVERSE/_reports/_proof_packs"
+gpg --verify "GX_PROOF_ROOT_20260211T192351Z.txt.asc" "GX_PROOF_ROOT_20260211T192351Z.txt"
+gpg --verify "GX_PROOF_PACK_20260211T192351Z.tar.gz.asc" "GX_PROOF_PACK_20260211T192351Z.tar.gz"
+gpg --verify "GX_PROOF_MANIFEST_20260211T192351Z.tsv.asc" "GX_PROOF_MANIFEST_20260211T192351Z.tsv"
+gpg --verify "GX_PROOF_SUMMARY_20260211T192351Z.txt.asc" "GX_PROOF_SUMMARY_20260211T192351Z.txt"
+```
+

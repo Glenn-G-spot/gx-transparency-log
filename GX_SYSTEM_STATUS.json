@@ -1,0 +1,16 @@
+{
+  "id": "20260211T192351Z",
+  "core": {
+    "root": { "status": "DONE" },
+    "pack": { "status": "DONE" },
+    "manifest": { "status": "DONE" },
+    "summary": { "status": "DONE" }
+  },
+  "layer1": {
+    "merkle_root": { "status": "DONE" }
+  },
+  "anchoring": {
+    "dns_anchor_file": { "status": "TODO" },
+    "ots_merkle": { "status": "PENDING" }
+  }
+}
