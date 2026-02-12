@@ -1,16 +1,21 @@
 {
   "id": "20260211T192351Z",
   "core": {
-    "root": { "status": "DONE" },
-    "pack": { "status": "DONE" },
-    "manifest": { "status": "DONE" },
-    "summary": { "status": "DONE" }
+    "root": { "file": "GX_PROOF_ROOT_20260211T192351Z.txt", "status": "DONE" },
+    "pack": { "file": "GX_PROOF_PACK_20260211T192351Z.tar.gz", "status": "DONE" },
+    "manifest": { "file": "GX_PROOF_MANIFEST_20260211T192351Z.tsv", "status": "DONE" },
+    "summary": { "file": "GX_PROOF_SUMMARY_20260211T192351Z.txt", "status": "DONE" }
   },
   "layer1": {
-    "merkle_root": { "status": "DONE" }
+    "merkle_root": { "file": "GX_MERKLE_ROOT_20260211T192351Z.txt", "status": "DONE" }
   },
   "anchoring": {
-    "dns_anchor_file": { "status": "TODO" },
-    "ots_merkle": { "status": "PENDING" }
+    "dns_anchor_file": { "file": "GX_DNS_TXT_ANCHOR_20260211T192351Z.txt", "status": "TODO" },
+    "ots_merkle": {
+      "file": "GX_MERKLE_ROOT_20260211T192351Z.txt.ots",
+      "status": "PENDING",
+      "ots_file_sha256": "5170cd3ef23db2f4392ab1209d89e00c195a190058992957071efdb0fbc02dab",
+      "btc_tx": "NA"
+    }
   }
 }
