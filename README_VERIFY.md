@@ -1,47 +1,64 @@
 # GX Transparency Log — Verification Guide
 
-This repository publishes signed snapshots ("tags") that attest to the integrity of GX proof-pack artifacts.
+This repository contains integrity evidence for GX proof artifacts. It is not
+the `gx-se1` source tree and does not build or start `gx_node`.
 
-## What you can verify here
-A signed Git tag (annotated) contains a status report that:
-- identifies the latest proof-run ID (e.g. 20260211T192351Z)
-- confirms core artifacts exist for that ID
-- verifies GPG signatures over those artifacts
-- confirms OpenTimestamps .ots proof files are present
+## Run the verifier
 
-If any referenced file is altered, GPG verification fails.
+Do **not** paste this README, a pull-request diff, lines beginning with `+`, or
+terminal output into `zsh`. Run the checked-in verifier instead. It resolves the
+repository from its own location, so it works even when Terminal is currently
+in `$HOME` or another directory.
 
----
+If the checkout is at `~/gx-transparency-log`, run exactly this one command:
 
-## 1) Verify the signed tag
-Fetch tags and verify the tag signature:
+```sh
+"$HOME/gx-transparency-log/tools/gx_verify_local.sh"
+```
 
-git fetch --tags
-git verify-tag gx-proof-20260211T192351Z-r2
+If that path does not exist, locate the script without executing anything:
 
-Show the attested status report stored inside the tag:
+```sh
+find "$HOME" -maxdepth 6 -type f -name gx_verify_local.sh -print 2>/dev/null
+```
 
-git show gx-proof-20260211T192351Z-r2:GX_STATUS_REPORT.txt | sed -n '1,120p'
+Then run the exact path printed by `find`, enclosed in double quotes. Do not run
+`.env.local`: it is a configuration file, not an executable command.
 
----
+## Result meanings
 
-## 2) Verify GPG signatures on the proof-pack artifacts (local proof-pack folder)
-ID="20260211T192351Z"
-cd /Users/next-move/GX_UNIVERSE/_reports/_proof_packs
+The verifier is read-only and performs no network fetch. It prints one final
+status and exits with the corresponding code:
 
-gpg --verify "GX_PROOF_ROOT_${ID}.txt.asc"     "GX_PROOF_ROOT_${ID}.txt"
-gpg --verify "GX_PROOF_PACK_${ID}.tar.gz.asc"  "GX_PROOF_PACK_${ID}.tar.gz"
-gpg --verify "GX_PROOF_MANIFEST_${ID}.tsv.asc" "GX_PROOF_MANIFEST_${ID}.tsv"
-gpg --verify "GX_PROOF_SUMMARY_${ID}.txt.asc"  "GX_PROOF_SUMMARY_${ID}.txt"
+| Output | Exit | Meaning |
+| --- | ---: | --- |
+| `OVERALL=PASS` | 0 | Every check implemented by the verifier passed. |
+| `OVERALL=FAIL` | 1 | A checksum, required file, or attempted signature check failed. |
+| `OVERALL=PARTIAL_NOT_VERIFIED` | 2 | Local integrity checks passed, but required evidence or verification capability is unavailable. |
 
----
+Missing tags, public keys, network-backed OpenTimestamps validation, and RFC
+3161 certificate-chain validation are reported as `NOT_VERIFIED`; they are never
+promoted to PASS. The verifier reports GPG checks separately for the Merkle root,
+DNS anchor, and signed snapshot.
 
-## 3) OpenTimestamps (.ots) verification
-source $HOME/ots-venv/bin/activate
-cd /Users/next-move/GX_UNIVERSE/_reports/_proof_packs
+The current checkout includes the proof run `20260211T192351Z`, detached GPG
+signatures, an OpenTimestamps proof, and two RFC 3161 responses. Passing a local
+artifact check does not prove source-build, runtime, release, deployment,
+commercial, or global status.
 
-ots upgrade "GX_PROOF_ROOT_${ID}.txt.ots" || true
-ots upgrade "GX_PROOF_PACK_${ID}.tar.gz.ots" || true
+## Manual Git inspection (optional)
 
-ots --no-bitcoin verify "GX_PROOF_ROOT_${ID}.txt.ots"
-ots --no-bitcoin verify "GX_PROOF_PACK_${ID}.tar.gz.ots"
+The verifier uses `git -C`, so it does not depend on the current directory. For
+manual inspection, use the same pattern:
+
+```sh
+REPO="$HOME/gx-transparency-log"
+git -C "$REPO" status --short
+git -C "$REPO" log -1 --oneline
+git -C "$REPO" remote -v
+git -C "$REPO" tag --list 'gx-proof-*'
+```
+
+An empty remote or tag list is not a PASS. Do not run `git fetch`, `git apply`,
+`git am`, or `patch` unless you intentionally mean to modify or update a verified
+checkout.
