@@ -39,7 +39,9 @@ status and exits with the corresponding code:
 Missing tags, public keys, network-backed OpenTimestamps validation, and RFC
 3161 certificate-chain validation are reported as `NOT_VERIFIED`; they are never
 promoted to PASS. The verifier reports GPG checks separately for the Merkle root,
-DNS anchor, and signed snapshot.
+DNS anchor, and signed snapshot. A signed tag whose key or local GPG verification
+capability is unavailable is also `NOT_VERIFIED`; an actually invalid tag
+signature is `FAIL`.
 
 The current checkout includes the proof run `20260211T192351Z`, detached GPG
 signatures, an OpenTimestamps proof, and two RFC 3161 responses. Passing a local
