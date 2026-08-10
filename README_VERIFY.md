@@ -53,6 +53,8 @@ python3 "$HOME/Documents/gx-transparency-log/tools/gx_verify_max.py" \
   --gpg-public-key "/trusted/path/GX_AUDIT_AUTHORITY_PUBLICKEY.asc" \
   --trusted-fingerprint "FULL_FINGERPRINT" \
   --rfc3161-source "/trusted/path/GX_MERKLE_SUPER_COMBINED_20260211T192351Z.txt" \
+  --rfc3161-request "digicert=/trusted/path/GX_MERKLE_SUPER_COMBINED_20260211T192351Z.txt.digicert.tsq" \
+  --rfc3161-request "globalsign=/trusted/path/GX_MERKLE_SUPER_COMBINED_20260211T192351Z.txt.globalsign.tsq" \
   --ca-file "/trusted/path/tsa-ca-bundle.pem" \
   --allow-network
 ```
@@ -60,6 +62,16 @@ python3 "$HOME/Documents/gx-transparency-log/tools/gx_verify_max.py" \
 Network-backed OpenTimestamps verification runs against a temporary copy. GPG
 always uses a temporary isolated keyring. A cryptographically valid signature
 without an independently pinned signer identity remains `NOT_VERIFIED`.
+With network access enabled, the verifier also compares the local signed-tag
+object to the exact tag published by `origin`; this proves public object
+identity, not the real-world identity of the signer.
+
+When a proof-pack directory is supplied, the verifier can discover the
+historical RFC 3161 source and per-authority `.tsq` requests there. A request is
+accepted only when its SHA-256 imprint and nonce match both the source and its
+response. If `bitcoin-cli` is installed, the verifier makes a read-only RPC
+probe: a running, fully synchronized mainnet node can independently confirm all
+OTS-attested blocks. It never starts a node.
 
 To generate corroboration evidence without installing software or changing the
 proof, run the companion first and then bind its JSON back into the maximum

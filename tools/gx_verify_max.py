@@ -221,6 +221,13 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--rfc3161-source", type=Path)
+    parser.add_argument(
+        "--rfc3161-request",
+        action="append",
+        default=[],
+        metavar="LABEL=PATH",
+        help="Explicit DigiCert/GlobalSign timestamp request; repeat once per authority.",
+    )
     parser.add_argument("--ca-file", type=Path)
     parser.add_argument("--untrusted-certificates", type=Path)
     return parser.parse_args()
@@ -254,6 +261,56 @@ def check_repository(ledger: Ledger) -> None:
         ledger.add("repository:worktree", "INFO", f"dirty_entries={len(status.splitlines())}", details=status.splitlines())
     else:
         ledger.add("repository:worktree", "NOT_VERIFIED", "status_unavailable", severity="medium", details=tail_text(status))
+
+
+def check_public_tag_publication(ledger: Ledger) -> None:
+    git = shutil.which("git")
+    if git is None:
+        ledger.add("publication:remote_tag_identity", "NOT_VERIFIED", "git_unavailable", severity="medium")
+        return
+    rc, remote = run_bounded([git, "-C", str(ledger.repo), "remote", "get-url", "origin"], timeout=10)
+    if rc != 0 or not remote.strip():
+        ledger.add("publication:remote_tag_identity", "NOT_VERIFIED", "origin_remote_unavailable", severity="medium")
+        return
+    if not ledger.network_allowed:
+        ledger.add("publication:remote_tag_identity", "NOT_VERIFIED", "network_verification_not_authorized", severity="medium")
+        return
+    ref = f"refs/tags/{TAG}"
+    rc, output = run_bounded([git, "ls-remote", "--refs", remote.strip(), ref], timeout=30)
+    if rc != 0:
+        ledger.add(
+            "publication:remote_tag_identity",
+            "NOT_VERIFIED",
+            "remote_tag_lookup_failed",
+            severity="medium",
+            details=tail_text(output),
+        )
+        return
+    rows = [line.split() for line in output.splitlines() if line.strip()]
+    matches = [row[0] for row in rows if len(row) == 2 and row[1] == ref and re.fullmatch(r"[0-9a-f]{40,64}", row[0])]
+    if len(matches) != 1:
+        ledger.add("publication:remote_tag_identity", "NOT_VERIFIED", "expected_public_tag_not_found", severity="medium")
+        return
+    local_rc, local_object = run_bounded([git, "-C", str(ledger.repo), "rev-parse", TAG], timeout=10)
+    if local_rc != 0:
+        ledger.add("publication:remote_tag_identity", "FAIL", "local_tag_missing_for_remote_comparison", severity="high")
+        return
+    local_object = local_object.strip()
+    if matches[0] != local_object:
+        ledger.add(
+            "publication:remote_tag_identity",
+            "FAIL",
+            "public_and_local_tag_objects_differ",
+            severity="critical",
+            details={"local": local_object, "remote": matches[0]},
+        )
+        return
+    ledger.add(
+        "publication:remote_tag_identity",
+        "PASS",
+        f"public_origin_tag_object_matches_local={local_object}",
+        details={"tag": TAG, "remote": remote.strip()},
+    )
 
 
 def check_index(ledger: Ledger, args: argparse.Namespace) -> list[str]:
@@ -1020,6 +1077,83 @@ def check_ots_evidence(
         )
 
 
+def check_local_full_node(ledger: Ledger, args: argparse.Namespace) -> None:
+    clients = executable_candidates("bitcoin-cli")
+    if not clients:
+        ledger.add("opentimestamps:local_full_node", "NOT_VERIFIED", "bitcoin_cli_unavailable", severity="high")
+        return
+    client = clients[0]
+    rc, output = run_bounded([client, "-rpcwait=0", "getblockchaininfo"], timeout=8)
+    if rc != 0:
+        ledger.add(
+            "opentimestamps:local_full_node",
+            "NOT_VERIFIED",
+            "bitcoin_cli_available_but_node_unreachable",
+            severity="high",
+            details=tail_text(output),
+        )
+        return
+    try:
+        chain = json.loads(output)
+    except json.JSONDecodeError:
+        ledger.add("opentimestamps:local_full_node", "FAIL", "node_returned_invalid_json", severity="critical")
+        return
+    synced = (
+        chain.get("chain") == "main"
+        and chain.get("initialblockdownload") is False
+        and isinstance(chain.get("blocks"), int)
+        and chain.get("blocks") == chain.get("headers")
+        and float(chain.get("verificationprogress", 0)) >= 0.999999
+    )
+    if not synced:
+        ledger.add(
+            "opentimestamps:local_full_node",
+            "NOT_VERIFIED",
+            "local_node_not_fully_synchronized_mainnet",
+            severity="high",
+            details={key: chain.get(key) for key in ("chain", "blocks", "headers", "verificationprogress", "initialblockdownload")},
+        )
+        return
+    if not args.ots_evidence or not args.ots_evidence.expanduser().is_file():
+        ledger.add("opentimestamps:local_full_node", "NOT_VERIFIED", "ots_block_evidence_unavailable_for_node_recheck", severity="high")
+        return
+    try:
+        evidence = json.loads(args.ots_evidence.expanduser().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        ledger.add("opentimestamps:local_full_node", "FAIL", "ots_evidence_unreadable_for_node_recheck", severity="critical", details=str(exc))
+        return
+    blocks = evidence.get("bitcoin_attestations")
+    if not isinstance(blocks, list) or not blocks:
+        ledger.add("opentimestamps:local_full_node", "FAIL", "ots_attested_blocks_missing", severity="critical")
+        return
+    verified = []
+    for block in blocks:
+        expected_hash = block.get("expected_block_hash") if isinstance(block, dict) else None
+        expected_height = block.get("height") if isinstance(block, dict) else None
+        if not isinstance(expected_hash, str) or not isinstance(expected_height, int):
+            ledger.add("opentimestamps:local_full_node", "FAIL", "malformed_attested_block_record", severity="critical")
+            return
+        header_rc, header_output = run_bounded([client, "-rpcwait=0", "getblockheader", expected_hash, "true"], timeout=10)
+        if header_rc != 0:
+            ledger.add("opentimestamps:local_full_node", "NOT_VERIFIED", "attested_block_unavailable_from_local_node", severity="high", details={"block_hash": expected_hash, "output": tail_text(header_output)})
+            return
+        try:
+            header = json.loads(header_output)
+        except json.JSONDecodeError:
+            ledger.add("opentimestamps:local_full_node", "FAIL", "local_node_header_json_invalid", severity="critical")
+            return
+        if header.get("hash") != expected_hash or header.get("height") != expected_height or int(header.get("confirmations", 0)) <= 0:
+            ledger.add("opentimestamps:local_full_node", "FAIL", "local_node_block_identity_or_mainchain_mismatch", severity="critical", details=header)
+            return
+        verified.append({"height": expected_height, "block_hash": expected_hash, "confirmations": header.get("confirmations")})
+    ledger.add(
+        "opentimestamps:local_full_node",
+        "PASS",
+        f"synchronized_mainnet_node_confirmed_attested_blocks={len(verified)}",
+        details={"node": {key: chain.get(key) for key in ("chain", "blocks", "headers", "verificationprogress", "pruned")}, "blocks": verified},
+    )
+
+
 def check_ots(ledger: Ledger, args: argparse.Namespace) -> None:
     material = ledger.repo / f"GX_MERKLE_ROOT_{PROOF_ID}.txt"
     proof = ledger.repo / f"GX_MERKLE_ROOT_{PROOF_ID}.txt.ots"
@@ -1045,12 +1179,7 @@ def check_ots(ledger: Ledger, args: argparse.Namespace) -> None:
             "gx_ots_max_evidence_not_supplied",
             severity="high",
         )
-    ledger.add(
-        "opentimestamps:local_full_node",
-        "NOT_VERIFIED",
-        "independent_local_full_node_chain_validation_not_performed",
-        severity="high",
-    )
+    check_local_full_node(ledger, args)
     if not args.allow_network:
         ledger.add(
             "opentimestamps:official_client",
@@ -1086,6 +1215,7 @@ def tsr_details(text: str) -> dict[str, Any]:
         "serial_number": r"Serial number:\s*([^\n]+)",
         "timestamp": r"Time stamp:\s*([^\n]+)",
         "tsa": r"TSA:\s*([^\n]+)",
+        "nonce": r"Nonce:\s*([^\n]+)",
     }
     for key, pattern in patterns.items():
         match = re.search(pattern, text, flags=re.IGNORECASE)
@@ -1128,12 +1258,23 @@ def check_rfc3161(ledger: Ledger, args: argparse.Namespace) -> None:
         candidate = ledger.repo / RFC3161_SOURCE_NAME
         if candidate.is_file():
             source = candidate
+        elif args.proof_pack_dir:
+            candidate = args.proof_pack_dir.expanduser().resolve() / RFC3161_SOURCE_NAME
+            if candidate.is_file():
+                source = candidate
     ca_file = args.ca_file
     if ca_file is None:
         system_ca = Path("/etc/ssl/cert.pem")
         if system_ca.is_file():
             ca_file = system_ca
     imprints: dict[str, str] = {}
+    request_overrides: dict[str, Path] = {}
+    for value in args.rfc3161_request:
+        label, separator, raw_path = value.partition("=")
+        if not separator or label not in responses or not raw_path:
+            ledger.add("rfc3161:request_arguments", "FAIL", "invalid_LABEL_PATH_argument", severity="critical", details=value)
+            continue
+        request_overrides[label] = Path(raw_path).expanduser().resolve()
     for label, response in responses.items():
         if not response.is_file():
             ledger.add(f"rfc3161:{label}:structure", "FAIL", "response_missing", severity="critical")
@@ -1192,17 +1333,73 @@ def check_rfc3161(ledger: Ledger, args: argparse.Namespace) -> None:
         if source is None or not source.is_file():
             ledger.add(f"rfc3161:{label}:content_binding", "NOT_VERIFIED", "timestamped_source_material_unavailable", severity="high")
         else:
-            rc, verify_output = run_bounded([openssl, "ts", "-verify", "-data", str(source), "-in", str(response), "-noverify"], timeout=25)
-            if rc == 0:
-                ledger.add(f"rfc3161:{label}:content_binding", "PASS", "source_hash_matches_timestamp_imprint", details=tail_text(verify_output))
+            source_digest = sha256(source)
+            if source_digest == digest:
+                ledger.add(
+                    f"rfc3161:{label}:content_binding",
+                    "PASS",
+                    "source_sha256_matches_timestamp_imprint",
+                    details={"source_sha256": source_digest, "source_bytes": source.stat().st_size},
+                )
             else:
-                ledger.add(f"rfc3161:{label}:content_binding", "FAIL", "source_hash_does_not_match_timestamp_imprint", severity="critical", details=tail_text(verify_output))
+                ledger.add(
+                    f"rfc3161:{label}:content_binding",
+                    "FAIL",
+                    "source_hash_does_not_match_timestamp_imprint",
+                    severity="critical",
+                    details={"source_sha256": source_digest, "timestamp_imprint": digest},
+                )
         request_candidates = [
+            request_overrides.get(label),
             response.with_suffix(".tsq"),
             ledger.repo / f"GX_MERKLE_SUPER_COMBINED_{PROOF_ID}.txt.{label}.tsq",
         ]
-        if any(path.is_file() for path in request_candidates):
-            ledger.add(f"rfc3161:{label}:request_presence", "PASS", "timestamp_request_present")
+        if args.proof_pack_dir:
+            request_candidates.append(
+                args.proof_pack_dir.expanduser().resolve()
+                / f"GX_MERKLE_SUPER_COMBINED_{PROOF_ID}.txt.{label}.tsq"
+            )
+        request = next((path for path in request_candidates if path is not None and path.is_file()), None)
+        if request is not None:
+            request_rc, request_output = run_bounded(
+                [openssl, "ts", "-query", "-in", str(request), "-text"], timeout=20
+            )
+            request_details = tsr_details(request_output) if request_rc == 0 else {}
+            request_imprint = request_details.get("message_imprint")
+            response_nonce = parsed.get("nonce")
+            request_nonce = request_details.get("nonce")
+            source_imprint = sha256(source) if source is not None and source.is_file() else None
+            nonce_matches = (
+                isinstance(request_nonce, str)
+                and isinstance(response_nonce, str)
+                and request_nonce.lower() == response_nonce.lower()
+            )
+            if request_rc == 0 and request_imprint == digest and source_imprint == digest and nonce_matches:
+                ledger.add(
+                    f"rfc3161:{label}:request_binding",
+                    "PASS",
+                    "request_source_and_response_imprint_nonce_match",
+                    details={
+                        "request_sha256": sha256(request),
+                        "message_imprint": request_imprint,
+                        "nonce": request_nonce,
+                    },
+                )
+            else:
+                ledger.add(
+                    f"rfc3161:{label}:request_binding",
+                    "FAIL",
+                    "request_source_or_response_binding_mismatch",
+                    severity="critical",
+                    details={
+                        "request_parse_exit": request_rc,
+                        "request_imprint": request_imprint,
+                        "response_imprint": digest,
+                        "source_imprint": source_imprint,
+                        "request_nonce": request_nonce,
+                        "response_nonce": response_nonce,
+                    },
+                )
         else:
             ledger.add(f"rfc3161:{label}:request_binding", "NOT_VERIFIED", "timestamp_request_absent", severity="medium")
         ledger.add(f"rfc3161:{label}:archived_revocation", "NOT_VERIFIED", "no_archived_crl_or_ocsp_ltv_evidence", severity="medium")
@@ -1287,6 +1484,7 @@ def main() -> int:
     print(f"NETWORK_FETCH_ALLOWED={'TRUE' if args.allow_network else 'FALSE'}")
     ledger = Ledger(repo, args.allow_network)
     check_repository(ledger)
+    check_public_tag_publication(ledger)
     entries = check_index(ledger, args)
     check_proof_pack(ledger, args, entries)
     check_required_files(ledger, entries)
