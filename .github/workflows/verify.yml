@@ -1,0 +1,30 @@
+name: Verification tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, codex/transparency-verifier-followup]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require integration-test tools
+        run: |
+          for tool in python3 git gpg gpgconf shasum openssl; do
+            command -v "$tool"
+          done
+          python3 --version
+      - name: Check shell syntax
+        run: bash -n tools/gx_verify_local.sh
+      - name: Run isolated offline regression suite
+        run: python3 -B -m unittest discover -s tests -v
