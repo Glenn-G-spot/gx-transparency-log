@@ -104,9 +104,20 @@ run_gpg_check \
   'gpg:snapshot'
 
 if git -C "$REPO" rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-  if git -C "$REPO" verify-tag "$TAG" >/dev/null 2>&1; then
+  tag_output="$(git -C "$REPO" verify-tag --raw "$TAG" 2>&1)"
+  tag_rc=$?
+  if [ "$tag_rc" -eq 0 ]; then
     pass "git_tag:$TAG"
+  elif printf '%s\n' "$tag_output" | grep -Eq \
+    '^\[GNUPG:\] (BADSIG|EXPSIG|EXPKEYSIG|REVKEYSIG) '; then
+    printf '%s\n' "$tag_output" >&2
+    fail "git_tag:$TAG:signature_check_failed"
+  elif printf '%s\n' "$tag_output" | grep -Eq \
+    '^\[GNUPG:\] NO_PUBKEY |^gpg: (waiting for lock([[:space:]]|$)|[^:]+: Operation timed out([[:space:]]|$)|Note: database_open [0-9]+ waiting for lock([[:space:]]|$))'; then
+    # Match status codes or specific diagnostics, never text in a signer UID.
+    not_verified "git_tag:$TAG:verification_capability_unavailable"
   else
+    printf '%s\n' "$tag_output" >&2
     fail "git_tag:$TAG:signature_check_failed"
   fi
 else
