@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -206,6 +207,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo", type=Path, default=script_repo)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--allow-network", action="store_true")
+    parser.add_argument("--allow-local-rpc", action="store_true", help="Allow read-only Bitcoin RPC calls using bitcoin-cli's configured node.")
     parser.add_argument("--proof-pack-dir", type=Path)
     parser.add_argument("--proof-pack-peer", type=Path, action="append", default=[])
     parser.add_argument("--proof-pack-builder", type=Path)
@@ -478,7 +480,7 @@ def check_proof_pack(ledger: Ledger, args: argparse.Namespace, index_entries: li
             member_map: dict[str, tarfile.TarInfo] = {}
             for member in members:
                 candidate = Path(member.name)
-                if candidate.is_absolute() or ".." in candidate.parts or member.issym() or member.islnk() or not member.isfile():
+                if candidate.is_absolute() or ".." in candidate.parts or member.issym() or member.islnk() or not member.isfile() or member.name in member_map:
                     unsafe.append(member.name)
                 else:
                     member_map[member.name] = member
@@ -487,13 +489,20 @@ def check_proof_pack(ledger: Ledger, args: argparse.Namespace, index_entries: li
                 return
             ledger.add("proof_pack:tar_safety", "PASS", f"regular_safe_members={len(members)}")
             rows = list(csv.DictReader(manifest.read_text(encoding="utf-8", errors="replace").splitlines(), delimiter="\t"))
+            if not rows:
+                ledger.add("proof_pack:manifest_content", "FAIL", "manifest_is_empty", severity="critical")
+                return
             bad_rows = []
+            manifest_members: set[str] = set()
             for row in rows:
                 source_path = row.get("path", "")
                 if "/_reports/" in source_path:
                     relative = "_reports/" + source_path.split("/_reports/", 1)[1]
                 else:
                     relative = source_path.lstrip("/")
+                if relative in manifest_members:
+                    bad_rows.append({"path": source_path, "error": "duplicate_manifest_path"})
+                manifest_members.add(relative)
                 member = member_map.get(relative)
                 if member is None:
                     bad_rows.append({"path": source_path, "error": "missing_from_bundle"})
@@ -516,6 +525,8 @@ def check_proof_pack(ledger: Ledger, args: argparse.Namespace, index_entries: li
                             "actual_sha256": actual_sha,
                         }
                     )
+            if set(member_map) != manifest_members:
+                bad_rows.append({"error": "manifest_bundle_file_list_mismatch"})
             if bad_rows:
                 ledger.add("proof_pack:manifest_content", "FAIL", f"bad_rows={len(bad_rows)} total={len(rows)}", severity="critical", details=bad_rows)
             else:
@@ -863,7 +874,7 @@ def check_gpg(ledger: Ledger, args: argparse.Namespace) -> None:
             return
         wrapper = home / "gpg-wrapper.sh"
         wrapper.write_text(
-            "#!/bin/sh\nexec " + " ".join([json.dumps(gpg), "--batch", "--no-tty", "--no-autostart", "--no-auto-key-locate", "--no-auto-key-retrieve", "--lock-never", '"$@"']) + "\n",
+            "#!/bin/sh\nexec " + " ".join([shlex.quote(gpg), "--batch", "--no-tty", "--no-autostart", "--no-auto-key-locate", "--no-auto-key-retrieve", "--lock-never", '"$@"']) + "\n",
             encoding="utf-8",
         )
         wrapper.chmod(0o700)
@@ -919,6 +930,9 @@ def check_ots_evidence(
             severity="critical",
             details=str(exc),
         )
+        return
+    if not isinstance(evidence, dict):
+        ledger.add("opentimestamps:evidence", "FAIL", "evidence_must_be_a_json_object", severity="critical")
         return
     if evidence.get("schema") != "gx.ots-max-evidence.v1":
         ledger.add(
@@ -1078,6 +1092,9 @@ def check_ots_evidence(
 
 
 def check_local_full_node(ledger: Ledger, args: argparse.Namespace) -> None:
+    if not args.allow_local_rpc:
+        ledger.add("opentimestamps:local_full_node", "NOT_VERIFIED", "local_rpc_not_requested", severity="high")
+        return
     clients = executable_candidates("bitcoin-cli")
     if not clients:
         ledger.add("opentimestamps:local_full_node", "NOT_VERIFIED", "bitcoin_cli_unavailable", severity="high")
@@ -1097,6 +1114,9 @@ def check_local_full_node(ledger: Ledger, args: argparse.Namespace) -> None:
         chain = json.loads(output)
     except json.JSONDecodeError:
         ledger.add("opentimestamps:local_full_node", "FAIL", "node_returned_invalid_json", severity="critical")
+        return
+    if not isinstance(chain, dict):
+        ledger.add("opentimestamps:local_full_node", "FAIL", "node_result_must_be_a_json_object", severity="critical")
         return
     synced = (
         chain.get("chain") == "main"
@@ -1122,7 +1142,7 @@ def check_local_full_node(ledger: Ledger, args: argparse.Namespace) -> None:
     except (OSError, json.JSONDecodeError) as exc:
         ledger.add("opentimestamps:local_full_node", "FAIL", "ots_evidence_unreadable_for_node_recheck", severity="critical", details=str(exc))
         return
-    blocks = evidence.get("bitcoin_attestations")
+    blocks = evidence.get("bitcoin_attestations") if isinstance(evidence, dict) else None
     if not isinstance(blocks, list) or not blocks:
         ledger.add("opentimestamps:local_full_node", "FAIL", "ots_attested_blocks_missing", severity="critical")
         return
@@ -1306,10 +1326,9 @@ def check_rfc3161(ledger: Ledger, args: argparse.Namespace) -> None:
                 )
                 wrong_first = "0" if digest[0] != "0" else "1"
                 wrong_digest = wrong_first + digest[1:]
-                wrong_rc, wrong_output = run_bounded(
-                    [openssl, "ts", "-verify", "-digest", wrong_digest, "-in", str(response), "-CAfile", str(ca_file)],
-                    timeout=25,
-                )
+                wrong_command = list(command)
+                wrong_command[wrong_command.index("-digest") + 1] = wrong_digest
+                wrong_rc, wrong_output = run_bounded(wrong_command, timeout=25)
                 if wrong_rc != 0 and "message imprint mismatch" in wrong_output.lower():
                     ledger.add(f"rfc3161:{label}:negative_control", "PASS", "wrong_digest_rejected")
                 else:
@@ -1475,14 +1494,53 @@ def render_markdown(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def report_directory(args: argparse.Namespace, repo: Path) -> Path | None:
+    if args.output_dir is None:
+        return None
+    output = args.output_dir.expanduser().resolve()
+    sources = [repo, *args.proof_pack_peer]
+    if args.proof_pack_dir:
+        sources.append(args.proof_pack_dir)
+    for source in sources:
+        root = source.expanduser().resolve()
+        if output == root or root in output.parents:
+            raise ValueError("output directory must be outside the repository and proof packs")
+    inputs = [args.ots_evidence, args.gpg_public_key, args.rfc3161_source,
+              args.ca_file, args.untrusted_certificates, args.proof_pack_builder, args.merkle_v2_builder]
+    inputs.extend(Path(value.partition("=")[2]) for value in args.rfc3161_request if value.partition("=")[2])
+    targets = {output / "GX_TRANSPARENCY_MAX_VERIFY_RESULT.json", output / "GX_TRANSPARENCY_MAX_VERIFY_REPORT.md"}
+    if any(source.expanduser().resolve() in targets for source in inputs if source is not None):
+        raise ValueError("report output must not replace an explicitly supplied source file")
+    return output
+
+
+def write_report(path: Path, text: str) -> None:
+    # Replacing the directory entry preserves sources reached by old symlinks or hard links.
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+    try:
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def main() -> int:
     args = parse_args()
     repo = args.repo.expanduser().resolve()
+    try:
+        output_dir = report_directory(args, repo)
+    except (OSError, ValueError) as exc:
+        print(f"FAIL=report_output:{exc}")
+        return 1
     print("GX_TRANSPARENCY_MAX_VERIFY=START")
     print(f"REPO={repo}")
     print("READ_ONLY=TRUE")
     print(f"NETWORK_FETCH_ALLOWED={'TRUE' if args.allow_network else 'FALSE'}")
     ledger = Ledger(repo, args.allow_network)
+    ledger.context["local_rpc_allowed"] = args.allow_local_rpc
     check_repository(ledger)
     check_public_tag_publication(ledger)
     entries = check_index(ledger, args)
@@ -1494,13 +1552,12 @@ def main() -> int:
     check_ots(ledger, args)
     check_rfc3161(ledger, args)
     payload = ledger.payload()
-    if args.output_dir:
-        output_dir = args.output_dir.expanduser().resolve()
+    if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
         json_path = output_dir / "GX_TRANSPARENCY_MAX_VERIFY_RESULT.json"
         md_path = output_dir / "GX_TRANSPARENCY_MAX_VERIFY_REPORT.md"
-        json_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        md_path.write_text(render_markdown(payload), encoding="utf-8")
+        write_report(json_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        write_report(md_path, render_markdown(payload))
         print(f"RESULT_JSON={json_path}")
         print(f"RESULT_REPORT={md_path}")
     print(f"OVERALL={payload['overall']}")

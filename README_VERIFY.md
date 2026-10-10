@@ -69,9 +69,10 @@ identity, not the real-world identity of the signer.
 When a proof-pack directory is supplied, the verifier can discover the
 historical RFC 3161 source and per-authority `.tsq` requests there. A request is
 accepted only when its SHA-256 imprint and nonce match both the source and its
-response. If `bitcoin-cli` is installed, the verifier makes a read-only RPC
-probe: a running, fully synchronized mainnet node can independently confirm all
-OTS-attested blocks. It never starts a node.
+response. Add `--allow-local-rpc` to explicitly permit read-only calls to the
+node configured for `bitcoin-cli`: a running, fully synchronized mainnet node
+can independently confirm all OTS-attested blocks. Without that flag, neither
+Python tool contacts the local node. Neither tool starts a node.
 
 To generate corroboration evidence without installing software or changing the
 proof, run the companion first and then bind its JSON back into the maximum
@@ -132,6 +133,16 @@ proof-root field is empty and remains `NOT_VERIFIED`; the reconstructed root is
 new evidence, not a retroactive signature. Independent signer identity, DNS
 publication, official OTS/local-node validation, and RFC 3161 source/request/LTV
 evidence remain external gates.
+
+## Automated regression checks
+
+Run `python3 -B -m unittest discover -s tests -v` from the repository root.
+Tests use temporary source fixtures and isolated GPG state. Calendar and Bitcoin
+provider responses are mocked, including unavailable and contradictory evidence;
+no test contacts a configured Bitcoin node or a public proof service. The GPG
+integration tests require `git`, `gpg`, `gpgconf`, and `shasum`.
+
+GitHub Actions runs the same suite on pull requests and pushes to `main`.
 
 ## Result meanings
 

@@ -22,6 +22,13 @@ from typing import Any
 PROOF_ID = "20260211T192351Z"
 SCHEMA = "gx_transparency_closure_candidate_v1"
 HEX64 = re.compile(r"[0-9a-f]{64}")
+PACKAGE_FILES = (
+    f"GX_ARTIFACT_CONTENT_MANIFEST_{PROOF_ID}.tsv",
+    f"GX_PROOF_PACK_MERKLE_RECONSTRUCTION_{PROOF_ID}.json",
+    f"GX_MERKLE_V2_DERIVATION_TRANSCRIPT_{PROOF_ID}.json",
+    f"GX_TRANSPARENCY_CLOSURE_PREFLIGHT_{PROOF_ID}.json",
+    f"GX_TRANSPARENCY_CLOSURE_SUMMARY_{PROOF_ID}.md",
+)
 
 
 class ClosureError(Exception):
@@ -74,7 +81,10 @@ def safe_entries(index_path: Path) -> list[str]:
         raise ClosureError("proof index contains duplicate entries")
     for entry in entries:
         candidate = Path(entry)
-        if candidate.is_absolute() or ".." in candidate.parts or entry.startswith("./"):
+        if (
+            candidate.is_absolute() or ".." in candidate.parts or entry == "."
+            or candidate.as_posix() != entry or any(char in entry for char in "\t\r\n\0")
+        ):
             raise ClosureError(f"unsafe index entry: {entry}")
     return entries
 
@@ -117,7 +127,8 @@ def collect_records(pack: Path, entries: list[str]) -> list[dict[str, Any]]:
     records = []
     for entry in entries:
         path = pack / entry
-        if path.is_symlink():
+        if any((pack.joinpath(*Path(entry).parts[:index])).is_symlink()
+               for index in range(1, len(Path(entry).parts) + 1)):
             raise ClosureError(f"indexed symlink rejected: {entry}")
         if path.is_file():
             records.append({"path": entry, "type": "file", "bytes": path.stat().st_size, "sha256": sha256_file(path)})
@@ -242,7 +253,12 @@ def manifest_file_map(root: Path) -> dict[str, str]:
         match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
         if not match:
             raise ClosureError("SHA256SUMS is malformed")
-        values[match.group(2)] = match.group(1)
+        name = match.group(2)
+        if name not in PACKAGE_FILES or name in values:
+            raise ClosureError(f"unexpected or duplicate SHA256SUMS entry: {name}")
+        values[name] = match.group(1)
+    if set(values) != set(PACKAGE_FILES):
+        raise ClosureError("SHA256SUMS must cover every closure output exactly once")
     return values
 
 
@@ -250,9 +266,10 @@ def verify_package(package: Path, pack: Path, repo_root_file: Path) -> None:
     checksums = manifest_file_map(package)
     for relative, expected in checksums.items():
         path = package / relative
-        if not path.is_file() or sha256_file(path) != expected:
+        if path.is_symlink() or not path.is_file() or sha256_file(path) != expected:
             raise ClosureError(f"closure package checksum mismatch: {relative}")
 
+    verify_index_self_hash(pack)
     entries = safe_entries(pack / "GX_PROOF_INDEX.txt")
     records = collect_records(pack, entries)
     stored_manifest = (package / f"GX_ARTIFACT_CONTENT_MANIFEST_{PROOF_ID}.tsv").read_text(encoding="utf-8", errors="strict")
@@ -279,8 +296,8 @@ def build_package(args: argparse.Namespace) -> None:
     pack = args.proof_pack_dir.expanduser().resolve(strict=True)
     repo_root_file = args.repo_merkle_root.expanduser().resolve(strict=True)
     output = args.output_dir.expanduser().resolve()
-    if pack == output or pack in output.parents:
-        raise ClosureError("output directory may not be inside the proof pack")
+    if any(root == output or root in output.parents for root in (pack, repo_root_file.parent)):
+        raise ClosureError("output directory may not be inside the proof pack or repository root directory")
     output.mkdir(parents=True, exist_ok=True)
 
     index = pack / "GX_PROOF_INDEX.txt"
@@ -371,9 +388,8 @@ The signed historical proof-root field remains empty. This package does not rewr
     write_text(output / summary_name, summary)
 
     checksum_rows = []
-    for path in sorted(output.iterdir(), key=lambda value: value.name.encode("utf-8")):
-        if path.is_file() and path.name != "SHA256SUMS":
-            checksum_rows.append(f"{sha256_file(path)}  {path.name}")
+    for name in sorted(PACKAGE_FILES):
+        checksum_rows.append(f"{sha256_file(output / name)}  {name}")
     write_text(output / "SHA256SUMS", "\n".join(checksum_rows) + "\n")
     verify_package(output, pack, repo_root_file)
     print(f"CLOSURE_OUTPUT={output}")

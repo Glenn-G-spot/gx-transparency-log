@@ -338,10 +338,14 @@ def parse_calendar_timestamp(
 
 
 def calendar_host_allowed(uri: str) -> bool:
-    parsed = urllib.parse.urlparse(uri)
+    try:
+        parsed = urllib.parse.urlparse(uri)
+        port = parsed.port
+    except ValueError:
+        return False
     if parsed.scheme != "https" or not parsed.hostname:
         return False
-    if parsed.username or parsed.password or parsed.port not in (None, 443):
+    if parsed.username or parsed.password or port not in (None, 443):
         return False
     if parsed.query or parsed.fragment or parsed.params:
         return False
@@ -586,7 +590,7 @@ def query_tip_heights() -> Dict[str, Any]:
     }
 
 
-def probe_capabilities() -> Dict[str, Any]:
+def probe_capabilities(allow_local_rpc: bool = False) -> Dict[str, Any]:
     ots_path = shutil.which("ots")
     bitcoin_cli_path = shutil.which("bitcoin-cli")
     local_node: Dict[str, Any] = {
@@ -597,7 +601,7 @@ def probe_capabilities() -> Dict[str, Any]:
         "full_chain_verification_performed": False,
         "reason": "No local full-node chain verification is performed by this audit.",
     }
-    if bitcoin_cli_path:
+    if bitcoin_cli_path and allow_local_rpc:
         local_node["rpc_probe_performed"] = True
         try:
             process = subprocess.run(
@@ -615,12 +619,15 @@ def probe_capabilities() -> Dict[str, Any]:
                     local_node["rpc_probe_result"] = "reachable_but_invalid_json"
                 else:
                     local_node["rpc_reachable"] = True
-                    local_node["rpc_probe_result"] = {
-                        "chain": info.get("chain"),
-                        "blocks": info.get("blocks"),
-                        "headers": info.get("headers"),
-                        "initialblockdownload": info.get("initialblockdownload"),
-                    }
+                    if isinstance(info, dict):
+                        local_node["rpc_probe_result"] = {
+                            "chain": info.get("chain"),
+                            "blocks": info.get("blocks"),
+                            "headers": info.get("headers"),
+                            "initialblockdownload": info.get("initialblockdownload"),
+                        }
+                    else:
+                        local_node["rpc_probe_result"] = "reachable_but_invalid_json_object"
             else:
                 local_node["rpc_probe_result"] = "unreachable_or_rejected"
         except subprocess.TimeoutExpired:
@@ -679,6 +686,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--target", required=True, type=Path)
     parser.add_argument("--proof", required=True, type=Path)
     parser.add_argument("--evidence", type=Path, default=default_evidence)
+    parser.add_argument("--allow-local-rpc", action="store_true", help="Allow a read-only capability probe of bitcoin-cli's configured node.")
     return parser.parse_args(argv)
 
 
@@ -725,7 +733,7 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
             "proof": proof_before,
             "evidence_path": str(evidence_path),
         },
-        "capabilities": probe_capabilities(),
+        "capabilities": probe_capabilities(args.allow_local_rpc),
         "checks": {},
         "proof": None,
         "calendar_upgrades": [],
@@ -745,8 +753,8 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
 
     with tempfile.TemporaryDirectory(prefix="gx-ots-max-") as temp_name:
         temp_dir = Path(temp_name)
-        target_copy = temp_dir / target.name
-        proof_copy = temp_dir / proof.name
+        target_copy = temp_dir / "target"
+        proof_copy = temp_dir / "proof.ots"
         shutil.copy2(target, target_copy)
         shutil.copy2(proof, proof_copy)
         evidence["temporary_workspace"] = {
@@ -757,7 +765,8 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         }
 
         try:
-            parsed_proof = parse_detached_proof(proof_copy.read_bytes())
+            with proof_copy.open("rb") as handle:
+                parsed_proof = parse_detached_proof(handle.read(MAX_PROOF_BYTES + 1))
         except (OSError, AuditError) as exc:
             checks["proof_parse"] = check("FAIL", safe_error(exc))
             checks["target_binding"] = check(
