@@ -109,7 +109,12 @@ if git -C "$REPO" rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
   if [ "$tag_rc" -eq 0 ]; then
     pass "git_tag:$TAG"
   elif printf '%s\n' "$tag_output" | grep -Eq \
-    '^\[GNUPG:\] NO_PUBKEY |No public key|waiting for lock|Operation timed out'; then
+    '^\[GNUPG:\] (BADSIG|EXPSIG|EXPKEYSIG|REVKEYSIG) '; then
+    printf '%s\n' "$tag_output" >&2
+    fail "git_tag:$TAG:signature_check_failed"
+  elif printf '%s\n' "$tag_output" | grep -Eq \
+    '^\[GNUPG:\] NO_PUBKEY |^gpg: (waiting for lock([[:space:]]|$)|[^:]+: Operation timed out([[:space:]]|$)|Note: database_open [0-9]+ waiting for lock([[:space:]]|$))'; then
+    # Match status codes or specific diagnostics, never text in a signer UID.
     not_verified "git_tag:$TAG:verification_capability_unavailable"
   else
     printf '%s\n' "$tag_output" >&2
